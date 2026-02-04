@@ -1,0 +1,11 @@
+#IGNORE Google .env
+credentials.json
+token.json
+.env*
+
+#UV Stuff
+uv.lock
+
+
+#Test Stuff
+test*
