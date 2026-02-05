@@ -1,5 +1,11 @@
 import os.path
 from fastmcp import FastMCP
+import dotenv
+dotenv.load_dotenv()
+
+import os
+from openai import OpenAI
+import json
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -8,6 +14,10 @@ from googleapiclient.discovery import build
 
 mcp = FastMCP("classroom-mcp")
 
+token = os.environ["GITHUB_TOKEN"]
+endpoint = "https://models.github.ai/inference"
+model = "openai/gpt-4.1-mini"
+
 SCOPES = [
     "https://www.googleapis.com/auth/classroom.courses.readonly",
     "https://www.googleapis.com/auth/classroom.student-submissions.me.readonly"
@@ -15,6 +25,8 @@ SCOPES = [
 isLogged = False
 creds = None
 service = None
+courses_cache = None
+cache_file = "courses_cache.json"
 
 def auth() -> Credentials:
   global isLogged
@@ -43,15 +55,43 @@ def auth() -> Credentials:
 
   return creds
 
-@mcp.tool
-def getCourses():
+
+def fetch_courses():
+  """Internal helper: fetch courses using cache or API. Returns a list of course dicts."""
+  global service, courses_cache
   if service is None:
     auth()
-    
-  results = service.courses().list(pageSize=10).execute()
-  courses = results.get("courses", [])
-  
-  return courses
+
+  if courses_cache is not None:
+    return courses_cache
+
+  if os.path.exists(cache_file):
+    try:
+      with open(cache_file, "r", encoding="utf-8") as f:
+        courses_cache = json.load(f)
+        return courses_cache
+    except Exception:
+      pass
+
+  try:
+    results = service.courses().list(pageSize=100).execute()
+    courses = results.get("courses", [])
+  except Exception:
+    courses = []
+
+  courses_cache = courses
+  try:
+    with open(cache_file, "w", encoding="utf-8") as f:
+      json.dump(courses_cache, f, ensure_ascii=False, indent=2)
+  except Exception:
+    pass
+
+  return courses_cache
+
+@mcp.tool
+def getCourses():
+  # Expose as a tool but delegate to internal fetcher to avoid calling the tool wrapper
+  return fetch_courses()
     
 @mcp.tool
 def getClases(courses):
@@ -80,6 +120,103 @@ def getClases(courses):
       all_coursework.append([])
 
   return all_coursework
+
+
+@mcp.tool
+def refresh_courses(_params=None):
+  """Force refresh the courses cache from Classroom API."""
+  return refresh_courses_internal()
+
+
+def refresh_courses_internal():
+  """Internal helper that refreshes the courses cache and returns the list."""
+  global service, courses_cache
+  if service is None:
+    auth()
+
+  try:
+    results = service.courses().list(pageSize=200).execute()
+    courses = results.get("courses", [])
+  except Exception:
+    courses = []
+
+  courses_cache = courses
+  try:
+    with open(cache_file, "w", encoding="utf-8") as f:
+      json.dump(courses_cache, f, ensure_ascii=False, indent=2)
+  except Exception:
+    pass
+
+  return courses_cache
+
+@mcp.tool
+def get_tasks(_params=None):
+  """Return a flattened list of coursework (tasks).
+
+  Supports optional params:
+  - courseName: search cached courses by name (substring, case-insensitive)
+  - courseId: use this id directly
+  If no params given, returns tasks from all courses.
+  """
+  global service
+  if service is None:
+    auth()
+
+  # helper to find course by name using cache
+  def find_course_by_name(name: str):
+    courses = fetch_courses() or []
+    if not name or not courses:
+      return None
+    q = name.strip().casefold()
+    # exact match first
+    for c in courses:
+      title = c.get("name") or c.get("title") or ""
+      if title and title.casefold() == q:
+        return c
+    # substring match
+    for c in courses:
+      title = c.get("name") or c.get("title") or ""
+      if title and q in title.casefold():
+        return c
+    return None
+
+  course_id = None
+  if isinstance(_params, dict):
+    if "courseId" in _params and _params.get("courseId"):
+      course_id = str(_params.get("courseId"))
+    elif "courseName" in _params and _params.get("courseName"):
+      found = find_course_by_name(_params.get("courseName"))
+      if found:
+        course_id = str(found.get("id"))
+
+  tasks = []
+
+  # If course_id provided, fetch only that course's coursework
+  if course_id:
+    try:
+      resp = service.courses().courseWork().list(courseId=course_id).execute()
+      course_work = resp.get("courseWork", [])
+      if isinstance(course_work, list):
+        tasks.extend(course_work)
+    except Exception:
+      pass
+    return tasks
+
+  # Otherwise fetch for all courses
+  courses = fetch_courses() or []
+  for course in courses:
+    cid = course.get("id")
+    if not cid:
+      continue
+    try:
+      resp = service.courses().courseWork().list(courseId=str(cid)).execute()
+      course_work = resp.get("courseWork", [])
+      if isinstance(course_work, list):
+        tasks.extend(course_work)
+    except Exception:
+      continue
+
+  return tasks
 
 def main():
   global creds
