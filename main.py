@@ -1,5 +1,10 @@
 import os.path
 from fastmcp import FastMCP
+import dotenv
+dotenv.load_dotenv()
+
+import os
+from openai import OpenAI
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -7,6 +12,10 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
 mcp = FastMCP("classroom-mcp")
+
+token = os.environ["GITHUB_TOKEN"]
+endpoint = "https://models.github.ai/inference"
+model = "openai/gpt-4.1-mini"
 
 SCOPES = [
     "https://www.googleapis.com/auth/classroom.courses.readonly",
@@ -48,7 +57,7 @@ def getCourses():
   if service is None:
     auth()
     
-  results = service.courses().list(pageSize=10).execute()
+  results = service.courses().list().execute()
   courses = results.get("courses", [])
   
   return courses
@@ -80,6 +89,8 @@ def getClases(courses):
       all_coursework.append([])
 
   return all_coursework
+
+
 
 def main():
   global creds
