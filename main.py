@@ -11,42 +11,51 @@ SCOPES = [
 ]
 isLogged = False
 
-def auth():
+def auth() -> Credentials:
   if os.path.exists("token.json"):
     creds = Credentials.from_authorized_user_file("token.json", SCOPES)
+    isLogged = True
 
   if not creds or not creds.valid:
     if creds and creds.expired and creds.refresh_token:
         creds.refresh(Request())
+        isLogged = True
     else:
         flow = InstalledAppFlow.from_client_secrets_file(
             "credentials.json", SCOPES
         )
         creds = flow.run_local_server(port=0)
+        isLogged = True
 
 def getCourses():
+  if (not isLogged):
+    auth()
   
 
 def main():
-    creds = None
+  creds = None
+  if (not isLogged):
+    creds = auth()
+    
+  
 
     
 
-        with open("token.json", "w") as token:
-            token.write(creds.to_json())
+  with open("token.json", "w") as token:
+    token.write(creds.to_json())
 
-    service = build("classroom", "v1", credentials=creds)
+  service = build("classroom", "v1", credentials=creds)
 
-    course_id = "780379512906"
+  course_id = "780379512906"
 
-    response = service.courses().courseWork().list(
-        courseId=course_id
-    ).execute()
+  response = service.courses().courseWork().list(
+      courseId=course_id
+  ).execute()
 
-    coursework = response.get("courseWork", [])
+  coursework = response.get("courseWork", [])
 
-    for work in coursework:
-        print(work["id"], "-", work["title"], "-", work["workType"])
+  for work in coursework:
+    print(work["id"], "-", work["title"], "-", work["workType"])
 
 if __name__ == "__main__":
-    main()
+  main()
