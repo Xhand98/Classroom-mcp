@@ -1,9 +1,12 @@
 import os.path
+from fastmcp import FastMCP
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
+
+mcp = FastMCP("classroom-mcp")
 
 SCOPES = [
     "https://www.googleapis.com/auth/classroom.courses.readonly",
@@ -40,6 +43,7 @@ def auth() -> Credentials:
 
   return creds
 
+@mcp.tool
 def getCourses():
   if service is None:
     auth()
@@ -49,7 +53,7 @@ def getCourses():
   
   return courses
     
-# ...existing code...
+@mcp.tool
 def getClases(courses):
   global service
   if service is None:
@@ -81,10 +85,10 @@ def main():
   global creds
   creds = auth() 
   
-  cursos = getCourses
+  cursos = getCourses()
   clases_todos_cursos = getClases(cursos)
 
   print(clases_todos_cursos)
 
 if __name__ == "__main__":
-  main()
+  mcp.run(transport="stdio")
