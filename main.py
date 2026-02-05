@@ -10,8 +10,14 @@ SCOPES = [
     "https://www.googleapis.com/auth/classroom.student-submissions.me.readonly"
 ]
 isLogged = False
+creds = None
+service = None
 
 def auth() -> Credentials:
+  global isLogged
+  global creds
+  global service
+
   if os.path.exists("token.json"):
     creds = Credentials.from_authorized_user_file("token.json", SCOPES)
     isLogged = True
@@ -27,35 +33,58 @@ def auth() -> Credentials:
         creds = flow.run_local_server(port=0)
         isLogged = True
 
-def getCourses():
-  if (not isLogged):
-    auth()
-  
-
-def main():
-  creds = None
-  if (not isLogged):
-    creds = auth()
-    
-  
-
-    
-
   with open("token.json", "w") as token:
     token.write(creds.to_json())
-
+  
   service = build("classroom", "v1", credentials=creds)
 
-  course_id = "780379512906"
+  return creds
 
-  response = service.courses().courseWork().list(
-      courseId=course_id
-  ).execute()
+def getCourses():
+  if service is None:
+    auth()
+    
+  results = service.courses().list(pageSize=10).execute()
+  courses = results.get("courses", [])
+  
+  return courses
+    
+# ...existing code...
+def getClases(courses):
+  global service
+  if service is None:
+    auth()
 
-  coursework = response.get("courseWork", [])
+  if isinstance(courses, dict):
+    courses = [courses]
+  if not isinstance(courses, list):
+    raise TypeError("courses must be a dict or a list of dicts")
 
-  for work in coursework:
-    print(work["id"], "-", work["title"], "-", work["workType"])
+  all_coursework = []
+  for course in courses:
+    if not isinstance(course, dict):
+      continue
+    course_id = course.get("id")
+    if not course_id:
+      continue
+    try:
+      resp = service.courses().courseWork().list(
+        courseId=str(course_id)
+      ).execute()
+      all_coursework.extend(resp.get("courseWork", []))
+    except Exception:
+      all_coursework.append([])
+
+  return all_coursework
+
+def main():
+  global creds
+  creds = auth() 
+  
+  cursos = getCourses
+  clases_todos_cursos = getClases(cursos)
+
+  print(clases_todos_cursos)
 
 if __name__ == "__main__":
   main()
