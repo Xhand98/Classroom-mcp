@@ -5,7 +5,6 @@ import dotenv
 dotenv.load_dotenv()
 
 import os
-from openai import OpenAI
 import json
 
 from google.auth.transport.requests import Request
@@ -17,10 +16,6 @@ mcp = FastMCP("classroom-mcp")
 
 # If run with --authorize, perform an interactive auth flow and exit.
 STANDALONE_AUTHORIZE = "--authorize" in sys.argv
-
-token = os.environ["GITHUB_TOKEN"]
-endpoint = "https://models.github.ai/inference"
-model = "openai/gpt-4.1-mini"
 
 SCOPES = [
     "https://www.googleapis.com/auth/classroom.courses.readonly",
