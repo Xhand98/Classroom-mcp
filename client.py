@@ -1,24 +1,320 @@
 import asyncio
+import os
+import dotenv
+import json
+
 from fastmcp import Client
+from openai import OpenAI
+from toon_python import encode
+
+dotenv.load_dotenv()
+
+# Token de GitHub
+token = os.environ["GITHUB_TOKEN"]
+endpoint = "https://models.github.ai/inference"
+
+# Cliente IA (GitHub Models)
+ai = OpenAI(
+    base_url=endpoint,
+    api_key=token,
+)
+
+SYSTEM_PROMPT = """Eres un asistente que determina si una pregunta está relacionada con tareas escolares o Google Classroom.
+
+Si el usuario pregunta CUALQUIER COSA relacionada con:
+- tareas, trabajos, asignaciones, deberes, actividades
+- classroom, clases, cursos
+- profesores y sus tareas
+- fechas de entrega
+- qué hay que hacer/entregar
+- pendientes escolares
+
+Responde ÚNICAMENTE con la palabra: CALL_CLASSROOM
+
+Para CUALQUIER otra pregunta que NO sea sobre tareas/classroom, responde normalmente.
+
+Ejemplos:
+Usuario: "Que tareas hay de Jose Luis?" → CALL_CLASSROOM
+Usuario: "Cuáles son mis tareas pendientes?" → CALL_CLASSROOM  
+Usuario: "Qué tiempo hace hoy?" → Respuesta normal
+Usuario: "Hola, cómo estás?" → Respuesta normal
+"""
+
+# Caché global de cursos y tareas
+COURSES_CACHE = {}
+TASKS_BY_COURSE = {}
+
+def find_course_by_name(query: str, courses_dict: dict) -> list:
+    """Busca cursos por nombre (fuzzy match)"""
+    query = query.lower().strip()
+    matches = []
+    
+    for course_id, course_info in courses_dict.items():
+        course_name = course_info.get('name', '').lower()
+        
+        # Exact match
+        if query == course_name:
+            return [course_id]
+        
+        # Contains match
+        if query in course_name or course_name in query:
+            matches.append(course_id)
+    
+    # También buscar por palabras clave
+    keywords = {
+        'ingles': ['english', 'inglés', 'ingles'],
+        'español': ['español', 'espanol', 'lengua española', 'lengua'],
+        'matematicas': ['matemáticas', 'matematicas', 'math'],
+        'ciencias': ['ciencias sociales', 'ciencias', 'sociales'],
+        'informatica': ['informática', 'informatica', 'tecnología', 'tecnologia'],
+    }
+    
+    for key, terms in keywords.items():
+        if any(term in query for term in terms):
+            for course_id, course_info in courses_dict.items():
+                course_name = course_info.get('name', '').lower()
+                if any(term in course_name for term in terms):
+                    if course_id not in matches:
+                        matches.append(course_id)
+    
+    return matches
+
+# Unwrap function - definida antes para usarla múltiples veces
+def unwrap_tool_result(obj):
+    # Si es un CallToolResult de FastMCP
+    if hasattr(obj, 'content'):
+        content = obj.content
+        if isinstance(content, list) and len(content) > 0:
+            first = content[0]
+            # TextContent tiene .text
+            if hasattr(first, 'text'):
+                import json
+                try:
+                    return json.loads(first.text)
+                except:
+                    return first.text
+            return first
+        return content
+    
+    # direct types
+    if obj is None:
+        return []
+    if isinstance(obj, (list, dict)):
+        return obj
+    
+    # common attribute names
+    for attr in ("value", "result", "data", "payload"):
+        if hasattr(obj, attr):
+            try:
+                v = getattr(obj, attr)
+                if isinstance(v, (list, dict)):
+                    return v
+                obj = v
+            except Exception:
+                pass
+    
+    # to_dict support
+    if hasattr(obj, "to_dict"):
+        try:
+            return obj.to_dict()
+        except Exception:
+            pass
+    
+    # iterable (but not string)
+    if hasattr(obj, "__iter__") and not isinstance(obj, (str, bytes)):
+        try:
+            return list(obj)
+        except Exception:
+            pass
+    
+    # fallback: try JSON parse of string representation
+    try:
+        import json
+        return json.loads(str(obj))
+    except Exception:
+        return [str(obj)]
 
 async def main():
-    client = Client("main.py")
-    
-    async with client:
-        tools = await client.list_tools()
-        print("Available tools: ")
-        for tool in tools:
-            print(f"  - {tool.name}: {tool.description}")
-        
-        print("\n" + "="*50 + "\n")
-        
-        result = await client.call_tool(
-            "getClases", 
-            {"courses": [{'id': '810833240308', 'name': 'Ciencias Sociales', 'section': '6to A Informatica ', 'room': 'Verky Galván ', 'ownerId': '112936706432720627369', 'creationTime': '2025-10-03T10:26:37.940Z', 'updateTime': '2025-10-03T10:26:37.940Z', 'courseState': 'ACTIVE', 'alternateLink': 'https://classroom.google.com/c/ODEwODMzMjQwMzA4', 'teacherGroupEmail': 'Ciencias_Sociales_6to_A_Informatica_teachers_2c26296a@classroom.google.com', 'courseGroupEmail': 'Ciencias_Sociales_6to_A_Informatica_d0db20c0@classroom.google.com', 'guardiansEnabled': False, 'calendarId': 'classroom113177358022058776103@group.calendar.google.com', 'gradebookSettings': {'calculationType': 'TOTAL_POINTS', 'displaySetting': 'HIDE_OVERALL_GRADE'}, 'subject': 'Verky Galván '}, {'id': '780502350582', 'name': 'English Class 6th graders', 'section': '6to Informatica', 'room': '1', 'ownerId': '117531377038716805230', 'creationTime': '2025-09-08T15:50:25.388Z', 'updateTime': '2025-09-08T16:28:18.958Z', 'courseState': 'ACTIVE', 'alternateLink': 'https://classroom.google.com/c/NzgwNTAyMzUwNTgy', 'teacherGroupEmail': 'English_Class_6th_graders_6to_Informatica_teachers_290caf3a@classroom.google.com', 'courseGroupEmail': 'English_Class_6th_graders_6to_Informatica_8504fd8e@classroom.google.com', 'guardiansEnabled': False, 'calendarId': 'classroom105293946000496153708@group.calendar.google.com', 'gradebookSettings': {'calculationType': 'TOTAL_POINTS', 'displaySetting': 'HIDE_OVERALL_GRADE'}, 'subject': 'English'}, {'id': '780379512906', 'name': 'Lengua Española', 'section': 'Todas', 'ownerId': '108374766705479266003', 'creationTime': '2025-09-03T15:45:11.564Z', 'updateTime': '2025-09-08T16:22:10.342Z', 'courseState': 'ACTIVE', 'alternateLink': 'https://classroom.google.com/c/NzgwMzc5NTEyOTA2', 'teacherGroupEmail': 'Lengua_Espa_ola_Todas_teachers_95df7cb5@classroom.google.com', 'courseGroupEmail': 'Lengua_Espa_ola_Todas_070745f9@classroom.google.com', 'guardiansEnabled': False, 'calendarId': 'classroom108116242622550149774@group.calendar.google.com', 'gradebookSettings': {'calculationType': 'TOTAL_POINTS', 'displaySetting': 'HIDE_OVERALL_GRADE'}, 'subject': 'Lengua Española'}, {'id': '804974851550', 'name': 'Implemenentación y Mantenimiento de Aplicaciones y Sistemas Informáticos', 'section': '6to Informática', 'ownerId': '113659265867269717573', 'creationTime': '2025-09-09T13:39:01.135Z', 'updateTime': '2025-09-09T13:39:01.135Z', 'courseState': 'ACTIVE', 'alternateLink': 'https://classroom.google.com/c/ODA0OTc0ODUxNTUw', 'teacherGroupEmail': 'Implemenentaci_n_y_Mantenimiento_de_Aplicaciones_y_Sistemas_Inform_ticos_6to_Inform_tica_teachers_59836434@classroom.google.com', 'courseGroupEmail': 'Implemenentaci_n_y_Mantenimiento_de_Aplicaciones_y_Sistemas_Inform_ticos_6to_Inform_tica_7d0c0355@classroom.google.com', 'guardiansEnabled': False, 'calendarId': 'classroom116225126317532139121@group.calendar.google.com', 'gradebookSettings': {'calculationType': 'TOTAL_POINTS', 'displaySetting': 'HIDE_OVERALL_GRADE'}}, {'id': '801093263708', 'name': 'Informática', 'ownerId': '102579337674745891925', 'creationTime': '2025-09-01T12:13:31.896Z', 'updateTime': '2025-09-03T12:53:01.653Z', 'courseState': 'ACTIVE', 'alternateLink': 'https://classroom.google.com/c/ODAxMDkzMjYzNzA4', 'teacherGroupEmail': 'Inform_tica_teachers_57de5334@classroom.google.com', 'courseGroupEmail': 'Inform_tica_51da6968@classroom.google.com', 'guardiansEnabled': False, 'calendarId': 'classroom103792419415625729298@group.calendar.google.com', 'gradebookSettings': {'calculationType': 'TOTAL_POINTS', 'displaySetting': 'HIDE_OVERALL_GRADE'}, 'subject': 'Matemática'}, {'id': '780201920117', 'name': '2025_6to Redes Informáticas Ybarra', 'section': '6to 2025-26', 'descriptionHeading': '6to Redes Informaticas Ybarra 6to 2020-21', 'description': 'Redes informáticas', 'room': 'A', 'ownerId': '103154929923382274906', 'creationTime': '2025-08-28T13:34:16.688Z', 'updateTime': '2025-08-28T13:34:16.688Z', 'courseState': 'ACTIVE', 'alternateLink': 'https://classroom.google.com/c/NzgwMjAxOTIwMTE3', 'teacherGroupEmail': '2025_6to_Redes_Inform_ticas_Ybarra_6to_2025_26_teachers_c376b64f@classroom.google.com', 'courseGroupEmail': '2025_6to_Redes_Inform_ticas_Ybarra_6to_2025_26_78683e03@classroom.google.com', 'guardiansEnabled': False, 'calendarId': 'classroom106782789816046004720@group.calendar.google.com', 'gradebookSettings': {'calculationType': 'TOTAL_POINTS', 'displaySetting': 'HIDE_OVERALL_GRADE'}, 'subject': 'Redes'}, {'id': '780202038155', 'name': '2025_6to Robótica Educativa', 'section': '6to 2025-26 YBARRA', 'descriptionHeading': '6to Robótica Educativa 6to 2021-22 INFORMATICA', 'ownerId': '103154929923382274906', 'creationTime': '2025-08-28T13:35:28.979Z', 'updateTime': '2025-08-28T13:35:28.979Z', 'courseState': 'ACTIVE', 'alternateLink': 'https://classroom.google.com/c/NzgwMjAyMDM4MTU1', 'teacherGroupEmail': '2025_6to_Rob_tica_Educativa_6to_2025_26_YBARRA_teachers_b794e101@classroom.google.com', 'courseGroupEmail': '2025_6to_Rob_tica_Educativa_6to_2025_26_YBARRA_1f60bb0a@classroom.google.com', 'guardiansEnabled': False, 'calendarId': 'classroom117147041462370187554@group.calendar.google.com', 'gradebookSettings': {'calculationType': 'TOTAL_POINTS', 'displaySetting': 'HIDE_OVERALL_GRADE'}, 'subject': 'ROBOTICA EDUCATIVA'}, {'id': '780201823175', 'name': '2025_6to(FCT)Ybarra INFORMATICA', 'section': '2025-26 "FCT" FORMACIÓN CENTRO DE TRABAJO', 'descriptionHeading': '6to(FCT)Ybarra INFORMATICA 2020 A Bachillerato Técnico en Desarrollo y Administración de Aplicaciones Informáticas', 'room': 'A', 'ownerId': '103154929923382274906', 'creationTime': '2025-08-28T13:32:52.821Z', 'updateTime': '2025-08-28T14:51:40.669Z', 'courseState': 'ACTIVE', 'alternateLink': 'https://classroom.google.com/c/NzgwMjAxODIzMTc1', 'teacherGroupEmail': '2025_6to_FCT_Ybarra_INFORMATICA_2025_26_FCT_FORMACI_N_CENTRO_DE_TRABAJO_teachers_63113623@classroom.google.com', 'courseGroupEmail': '2025_6to_FCT_Ybarra_INFORMATICA_2025_26_FCT_FORMACI_N_CENTRO_DE_TRABAJO_a221b1d3@classroom.google.com', 'guardiansEnabled': False, 'calendarId': 'classroom117529984449078748694@group.calendar.google.com', 'gradebookSettings': {'calculationType': 'TOTAL_POINTS', 'displaySetting': 'HIDE_OVERALL_GRADE'}, 'subject': 'Bachillerato Técnico en Desarrollo y Administración de Aplicaciones Informáticas'}, {'id': '780198246317', 'name': '2025_6to(DISWM)Ybarra INFORMÁTICA', 'section': '2025-26 "DISWM" DESAROLLO IMPLEMENTACIÓN SOLUCIONES WEB Y MULTIMEDIA', 'descriptionHeading': '6to(DISWEB)Informática Ybarra 2020 A BACHILLERATO', 'room': 'A', 'ownerId': '103154929923382274906', 'creationTime': '2025-08-28T12:41:38.870Z', 'updateTime': '2025-08-28T15:02:49.286Z', 'courseState': 'ACTIVE', 'alternateLink': 'https://classroom.google.com/c/NzgwMTk4MjQ2MzE3', 'teacherGroupEmail': '2025_6to_DISWM_Ybarra_INFORM_TICA_2025_26_DISWM_DESAROLLO_IMPLEMANTACI_N_SOLUCIONES_WEB_Y_MULTIMEDIA_teachers_4cf897d7@classroom.google.com', 'courseGroupEmail': '2025_6to_DISWM_Ybarra_INFORM_TICA_2025_26_DISWM_DESAROLLO_IMPLEMANTACI_N_SOLUCIONES_WEB_Y_MULTIMEDIA_02539dce@classroom.google.com', 'guardiansEnabled': False, 'calendarId': 'classroom100032907816729750212@group.calendar.google.com', 'gradebookSettings': {'calculationType': 'TOTAL_POINTS', 'displaySetting': 'HIDE_OVERALL_GRADE'}, 'subject': 'Bachillerato Técnico en Desarrollo y Administración de Aplicaciones Informáticas'}, {'id': '764145279675', 'name': 'Pisa 2025', 'ownerId': '115859737524608707509', 'creationTime': '2025-04-03T15:04:57.269Z', 'updateTime': '2025-04-03T15:04:57.269Z', 'courseState': 'ACTIVE', 'alternateLink': 'https://classroom.google.com/c/NzY0MTQ1Mjc5Njc1', 'teacherGroupEmail': 'Pisa_2025_teachers_da331939@classroom.google.com', 'courseGroupEmail': 'Pisa_2025_64d22cc1@classroom.google.com', 'guardiansEnabled': False, 'calendarId': 'classroom109471164176888774234@group.calendar.google.com', 'gradebookSettings': {'calculationType': 'TOTAL_POINTS', 'displaySetting': 'HIDE_OVERALL_GRADE'}}, {'id': '712107610408', 'name': 'DESARROLLO DE APLICACIONES Y SISTEMAS DE INFORMACIÓN', 'section': '5TOA INFORMATICA', 'descriptionHeading': 'DESARROLLO DE APLICACIONES Y SISTEMAS DE INFORMACIÓN 5TOA INFORMATICA', 'ownerId': '116469360337406642995', 'creationTime': '2024-09-10T16:33:07.370Z', 'updateTime': '2024-09-10T16:33:07.370Z', 'courseState': 'ACTIVE', 'alternateLink': 'https://classroom.google.com/c/NzEyMTA3NjEwNDA4', 'teacherGroupEmail': 'DESARROLLO_DE_APLICACIONES_Y_SISTEMAS_DE_INFORMACI_N_5TOA_INFORMATICA_teachers_a4139ef4@classroom.google.com', 'courseGroupEmail': 'DESARROLLO_DE_APLICACIONES_Y_SISTEMAS_DE_INFORMACI_N_5TOA_INFORMATICA_c95e937a@classroom.google.com', 'guardiansEnabled': False, 'calendarId': 'classroom116671213951234584632@group.calendar.google.com', 'gradebookSettings': {'calculationType': 'TOTAL_POINTS', 'displaySetting': 'HIDE_OVERALL_GRADE'}}, {'id': '712345433887', 'name': 'FORMACIÓN Y ORIENTACIÓN LABORAL', 'section': 'A', 'descriptionHeading': 'FORMACIÓN Y ORIENTACIÓN LABORAL A', 'ownerId': '113659265867269717573', 'creationTime': '2024-09-11T15:33:08.803Z', 'updateTime': '2025-08-27T18:14:59.953Z', 'courseState': 'ARCHIVED', 'alternateLink': 'https://classroom.google.com/c/NzEyMzQ1NDMzODg3', 'teacherGroupEmail': 'FORMACI_N_Y_ORIENTACI_N_LABORAL_A_teachers_675c41ce@classroom.google.com', 'courseGroupEmail': 'FORMACI_N_Y_ORIENTACI_N_LABORAL_A_b51c5ebe@classroom.google.com', 'guardiansEnabled': False, 'calendarId': 'classroom100382482036876862375@group.calendar.google.com', 'gradebookSettings': {'calculationType': 'TOTAL_POINTS', 'displaySetting': 'HIDE_OVERALL_GRADE'}}, {'id': '589544604798', 'name': 'QUIMICA', 'section': 'INFORMATICA 5TO A', 'descriptionHeading': 'QUIMICA INFORMATICA 5TO A', 'ownerId': '109607005033716228968', 'creationTime': '2023-09-04T20:50:24.423Z', 'updateTime': '2024-09-06T21:32:25.777Z', 'courseState': 'ACTIVE', 'alternateLink': 'https://classroom.google.com/c/NTg5NTQ0NjA0Nzk4', 'teacherGroupEmail': 'QUIMICA_INFORMATICA_5TO_A_teachers_c8959094@classroom.google.com', 'courseGroupEmail': 'QUIMICA_INFORMATICA_5TO_A_ae1a6caa@classroom.google.com', 'guardiansEnabled': False, 'calendarId': 'classroom101385019549208974958@group.calendar.google.com', 'gradebookSettings': {'calculationType': 'TOTAL_POINTS', 'displaySetting': 'HIDE_OVERALL_GRADE'}, 'subject': 'QUIMICA'}, {'id': '685311293306', 'name': '5to Informática', 'section': 'A', 'descriptionHeading': '5to Informática A', 'ownerId': '110755573690853878580', 'creationTime': '2024-09-02T12:55:25.885Z', 'updateTime': '2025-08-26T12:54:34.538Z', 'courseState': 'ARCHIVED', 'alternateLink': 'https://classroom.google.com/c/Njg1MzExMjkzMzA2', 'teacherGroupEmail': '5to_Inform_tica_A_teachers_13a1b00d@classroom.google.com', 'courseGroupEmail': '5to_Inform_tica_A_49487679@classroom.google.com', 'guardiansEnabled': False, 'calendarId': 'classroom101577244599902374711@group.calendar.google.com', 'gradebookSettings': {'calculationType': 'TOTAL_POINTS', 'displaySetting': 'HIDE_OVERALL_GRADE'}, 'subject': 'English Class'}, {'id': '708853975140', 'name': 'Administración de Base de Datos', 'section': 'A', 'descriptionHeading': 'Administración de Base de Datos A', 'room': '16', 'ownerId': '113659265867269717573', 'creationTime': '2024-08-28T15:55:42.757Z', 'updateTime': '2025-08-27T18:14:59.878Z', 'courseState': 'ARCHIVED', 'alternateLink': 'https://classroom.google.com/c/NzA4ODUzOTc1MTQw', 'teacherGroupEmail': 'Administraci_n_de_Base_de_Datos_A_teachers_8e56ce4e@classroom.google.com', 'courseGroupEmail': 'Administraci_n_de_Base_de_Datos_A_7bc77958@classroom.google.com', 'guardiansEnabled': False, 'calendarId': 'classroom105817190543539206626@group.calendar.google.com', 'gradebookSettings': {'calculationType': 'TOTAL_POINTS', 'displaySetting': 'HIDE_OVERALL_GRADE'}}, {'id': '628282785609', 'name': '4to A informática Ofimática 23-24', 'section': 'Ofimática', 'descriptionHeading': '4to A informática Ofimática Ofimática', 'ownerId': '117189056203536439898', 'creationTime': '2024-01-25T16:21:10.807Z', 'updateTime': '2024-01-31T14:12:20.761Z', 'courseState': 'ACTIVE', 'alternateLink': 'https://classroom.google.com/c/NjI4MjgyNzg1NjA5', 'teacherGroupEmail': '4to_A_inform_tica_Ofim_tica_Ofim_tica_teachers_a6588ff5@classroom.google.com', 'courseGroupEmail': '4to_A_inform_tica_Ofim_tica_Ofim_tica_54ffc1e7@classroom.google.com', 'guardiansEnabled': False, 'calendarId': 'classroom116936546295840338553@group.calendar.google.com', 'gradebookSettings': {'calculationType': 'TOTAL_POINTS', 'displaySetting': 'HIDE_OVERALL_GRADE'}}, {'id': '657300860255', 'name': 'Portales Web y Recursos Multimedia 23-24', 'section': '4to Informatica', 'descriptionHeading': 'Portales Web y Recursos Multimedia 4to Informatica', 'ownerId': '117189056203536439898', 'creationTime': '2024-01-24T12:04:13.735Z', 'updateTime': '2024-01-24T16:50:46.363Z', 'courseState': 'ACTIVE', 'alternateLink': 'https://classroom.google.com/c/NjU3MzAwODYwMjU1', 'teacherGroupEmail': 'Portales_Web_y_Recursos_Multimedia_4to_Informatica_teachers_fc9a5dc1@classroom.google.com', 'courseGroupEmail': 'Portales_Web_y_Recursos_Multimedia_4to_Informatica_1ef0f2de@classroom.google.com', 'guardiansEnabled': False, 'calendarId': 'classroom102965385401254886997@group.calendar.google.com', 'gradebookSettings': {'calculationType': 'TOTAL_POINTS', 'displaySetting': 'HIDE_OVERALL_GRADE'}, 'subject': 'Portales Web y Recursos Multimedia'}, {'id': '640361555470', 'name': '6to. Informática-Educación Artístic6', 'section': 'Profe, Isabel Arias-2025-2026', 'descriptionHeading': '4to. Informática-Educación Artística Profe, Isabel Arias', 'ownerId': '117413435908689477039', 'creationTime': '2023-11-14T13:56:15.367Z', 'updateTime': '2025-08-27T19:16:44.048Z', 'courseState': 'ACTIVE', 'alternateLink': 'https://classroom.google.com/c/NjQwMzYxNTU1NDcw', 'teacherGroupEmail': '4to_Inform_tica_Educaci_n_Art_stica_Profe_Isabel_Arias_teachers_48b369f2@classroom.google.com', 'courseGroupEmail': '4to_Inform_tica_Educaci_n_Art_stica_Profe_Isabel_Arias_ecdce6ee@classroom.google.com', 'guardiansEnabled': False, 'calendarId': 'classroom111535330872393609661@group.calendar.google.com', 'gradebookSettings': {'calculationType': 'TOTAL_POINTS', 'displaySetting': 'HIDE_OVERALL_GRADE'}}, {'id': '620587966437', 'name': '4TO INFORMATICA', 'section': 'A', 'descriptionHeading': '4TO INFORMATICA A', 'ownerId': '108237769977596592192', 'creationTime': '2023-09-01T02:04:46.408Z', 'updateTime': '2023-09-01T02:05:42.690Z', 'courseState': 'ACTIVE', 'alternateLink': 'https://classroom.google.com/c/NjIwNTg3OTY2NDM3', 'teacherGroupEmail': '4TO_INFORMATICA_A_teachers_61564b0f@classroom.google.com', 'courseGroupEmail': '4TO_INFORMATICA_A_d59b7da5@classroom.google.com', 'guardiansEnabled': False, 'calendarId': 'classroom106890421733071361361@group.calendar.google.com', 'gradebookSettings': {'calculationType': 'TOTAL_POINTS', 'displaySetting': 'HIDE_OVERALL_GRADE'}, 'subject': 'MATEMATICA'}, {'id': '589569867255', 'name': 'Diseño y Desarrollo de Bases de Datos(2023-2024)', 'section': 'A', 'descriptionHeading': 'Análisis y Diseño de Base de Datos(2023-2024) A', 'ownerId': '113659265867269717573', 'creationTime': '2023-09-05T15:12:26.137Z', 'updateTime': '2024-08-28T15:51:17.940Z', 'courseState': 'ARCHIVED', 'alternateLink': 'https://classroom.google.com/c/NTg5NTY5ODY3MjU1', 'teacherGroupEmail': 'An_lisis_y_Dise_o_de_Base_de_Datos_2023_2024_A_teachers_0886eca1@classroom.google.com', 'courseGroupEmail': 'An_lisis_y_Dise_o_de_Base_de_Datos_2023_2024_A_0525dc59@classroom.google.com', 'guardiansEnabled': False, 'calendarId': 'classroom107549269770997173546@group.calendar.google.com', 'gradebookSettings': {'calculationType': 'TOTAL_POINTS', 'displaySetting': 'SHOW_OVERALL_GRADE'}}, {'id': '589570841324', 'name': 'Análisis y Diseño de Sistemas Informáticos(2023-2024)', 'section': 'A', 'descriptionHeading': 'Análisis y Diseño de Sistemas Informáticos(2023-2024) A', 'ownerId': '113659265867269717573', 'creationTime': '2023-09-05T15:14:16.318Z', 'updateTime': '2024-08-28T15:51:12.776Z', 'courseState': 'ARCHIVED', 'alternateLink': 'https://classroom.google.com/c/NTg5NTcwODQxMzI0', 'teacherGroupEmail': 'An_lisis_y_Dise_o_de_Sistemas_Inform_ticos_2023_2024_A_teachers_463419f6@classroom.google.com', 'courseGroupEmail': 'An_lisis_y_Dise_o_de_Sistemas_Inform_ticos_2023_2024_A_8310f290@classroom.google.com', 'guardiansEnabled': False, 'calendarId': 'classroom108387068398220365478@group.calendar.google.com', 'gradebookSettings': {'calculationType': 'TOTAL_POINTS', 'displaySetting': 'HIDE_OVERALL_GRADE'}}, {'id': '589395278631', 'name': '4to. Secundria-Educación ArtÍstica', 'section': 'Profe-Isabel Arias', 'descriptionHeading': '4to. Secundria Todas as secciones.', 'ownerId': '117413435908689477039', 'creationTime': '2023-08-28T13:56:34.436Z', 'updateTime': '2024-10-30T13:39:49.617Z', 'courseState': 'ARCHIVED', 'alternateLink': 'https://classroom.google.com/c/NTg5Mzk1Mjc4NjMx', 'teacherGroupEmail': '4to_Secundria_Todas_as_secciones_teachers_4b4449fb@classroom.google.com', 'courseGroupEmail': '4to_Secundria_Todas_as_secciones_e6293381@classroom.google.com', 'guardiansEnabled': False, 'calendarId': 'classroom102122662376199572594@group.calendar.google.com', 'gradebookSettings': {'calculationType': 'TOTAL_POINTS', 'displaySetting': 'HIDE_OVERALL_GRADE'}, 'subject': 'Educación Artística'}, {'id': '619698153640', 'name': 'Biología (Informática A) 2023-2024', 'section': 'Informática A 2023-2024', 'descriptionHeading': 'Biología (Mercadeo A) 2023-2024 Mercadeo A', 'room': '6', 'ownerId': '101414471123482389222', 'creationTime': '2023-08-27T18:31:57.618Z', 'updateTime': '2023-09-05T06:08:16.950Z', 'courseState': 'ACTIVE', 'alternateLink': 'https://classroom.google.com/c/NjE5Njk4MTUzNjQw', 'teacherGroupEmail': 'Biolog_a_Inform_tica_A_2023_2024_Inform_tica_A_2023_2024_teachers_4bb41079@classroom.google.com', 'courseGroupEmail': 'Biolog_a_Inform_tica_A_2023_2024_Inform_tica_A_2023_2024_7d0190d7@classroom.google.com', 'guardiansEnabled': False, 'calendarId': 'classroom110090167609850650415@group.calendar.google.com', 'gradebookSettings': {'calculationType': 'TOTAL_POINTS', 'displaySetting': 'HIDE_OVERALL_GRADE'}, 'subject': 'Biología}'}]}
-        )
-        print(f"Clases result: {result}")
-        
-    
-    
+    mcp = Client("main.py")
+
+    async with mcp:
+        print("IA lista. Escribe preguntas.\n")
+
+        while True:
+            user_input = input("> ").strip()
+
+            if not user_input:
+                continue
+            
+            # Salir
+            if user_input.lower() in ['salir', 'exit', 'quit']:
+                print("¡Hasta luego!")
+                break
+
+            # 1️⃣ Preguntamos a la IA si necesita classroom
+            response = ai.chat.completions.create(
+                model="openai/gpt-4.1-mini",
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": user_input},
+                ],
+                temperature=0.1,
+            )
+
+            answer = response.choices[0].message.content.strip()
+
+            # 2️⃣ ¿La IA quiere llamar Classroom?
+            if "CALL_CLASSROOM" in answer.upper():
+                
+                global COURSES_CACHE, TASKS_BY_COURSE
+                
+                try:
+                    # Primero obtener/actualizar caché de cursos
+                    if not COURSES_CACHE:
+                        print("\n📚 Consultando tus cursos de Google Classroom...")
+                        courses_result = await mcp.call_tool("getCourses", {})
+                        courses_data = unwrap_tool_result(courses_result)
+                        
+                        if isinstance(courses_data, list):
+                            for course in courses_data:
+                                if isinstance(course, dict):
+                                    cid = str(course.get('id'))
+                                    COURSES_CACHE[cid] = course
+                        
+                        print(f"   ✓ {len(COURSES_CACHE)} cursos encontrados\n")
+                    
+                    # Buscar si el usuario menciona un curso específico
+                    course_filter = find_course_by_name(user_input, COURSES_CACHE)
+                    
+                    if course_filter:
+                        course_names = [COURSES_CACHE[cid].get('name') for cid in course_filter]
+                        print(f"🎯 Buscando tareas de: {', '.join(course_names)}")
+                        # Obtener solo tareas de esos cursos
+                        all_tasks = []
+                        for cid in course_filter:
+                            course_name = COURSES_CACHE[cid].get('name', 'Sin nombre')
+                            
+                            # Verificar si ya tenemos en caché
+                            if cid not in TASKS_BY_COURSE:
+                                print(f"   📖 Cargando {course_name}...")
+                                # getClases espera un dict con key "courses"
+                                tasks_result = await mcp.call_tool("getClases", {"courses": [COURSES_CACHE[cid]]})
+                                tasks_data = unwrap_tool_result(tasks_result)
+                                TASKS_BY_COURSE[cid] = tasks_data if isinstance(tasks_data, list) else []
+                            
+                            # Agregar courseName a cada tarea
+                            for task in TASKS_BY_COURSE[cid]:
+                                if isinstance(task, dict):
+                                    task['courseName'] = course_name
+                                    all_tasks.append(task)
+                        
+                        result = all_tasks
+                        print(f"   ✓ {len(result)} tareas encontradas\n")
+                    
+                    else:
+                        # No hay filtro, obtener todas las tareas
+                        print("\n📚 Obteniendo todas tus tareas...")
+                        result = await mcp.call_tool("get_tasks", {})
+                        result = unwrap_tool_result(result)
+                        
+                        # Agregar nombre del curso
+                        if isinstance(result, list):
+                            for task in result:
+                                if isinstance(task, dict):
+                                    cid = str(task.get('courseId', ''))
+                                    task['courseName'] = COURSES_CACHE.get(cid, {}).get('name', f'Curso {cid}')
+                        
+                        print(f"   ✓ {len(result) if isinstance(result, list) else 0} tareas encontradas\n")
+                    
+                    
+                except Exception as e:
+                    print(f"\n❌ Ups! Algo salió mal: {e}\n")
+                    continue
+
+                # Si no hay tareas
+                if not result or (isinstance(result, list) and len(result) == 0):
+                    print("📭 No encontré tareas aquí")
+                    print("   ¿Seguro que tienes tareas en ese curso?\n")
+                    continue
+
+                # 3️⃣ Preparar payload optimizado con TOON
+                def format_tasks(items, max_items=100, max_chars=None):
+                    compact = []
+                    if isinstance(items, dict):
+                        items = [items]
+                    
+                    for t in (items or [])[:max_items]:
+                        if not isinstance(t, dict):
+                            continue
+                        task_info = {
+                            "courseName": t.get("courseName", "Sin curso"),
+                            "title": t.get("title") or t.get("name") or "Sin título",
+                            "description": (t.get("description") or "")[:200],
+                            "dueDate": t.get("dueDate"),
+                        }
+                        # Limpiar None
+                        task_info = {k: v for k, v in task_info.items() if v}
+                        compact.append(task_info)
+                    
+                    # Usar TOON en lugar de JSON (30-60% menos tokens!)
+                    result_toon = encode(compact)
+                    
+                    # Si hay límite de caracteres y se excede
+                    if max_chars and len(result_toon) > max_chars:
+                        # Reducir items
+                        compact = compact[:max(1, max_items // 2)]
+                        result_toon = encode(compact)
+                    
+                    return result_toon
+
+                payload = format_tasks(result, max_items=30)
+                
+                print(f"🤖 Analizando {len(result)} tareas...\n")
+
+                system_msg = f"""Eres un asistente amigable de Google Classroom.
+
+Usuario preguntó: "{user_input}"
+
+Los datos están en formato TOON (Token-Oriented Object Notation) - un formato compacto similar a JSON.
+Organiza y resume las tareas de forma clara y amigable. 
+Si son de un curso específico, enfócate en ese.
+Si son de varios cursos, agrúpalas por materia.
+Usa emojis para hacerlo más divertido."""
+
+                try:
+                    followup = ai.chat.completions.create(
+                        model="openai/gpt-4.1-mini",
+                        messages=[
+                            {"role": "system", "content": system_msg},
+                            {"role": "user", "content": payload},
+                        ],
+                    )
+                except Exception as e:
+                    # If request too large, retry with a smaller payload
+                    err = str(e)
+                    if "tokens_limit_reached" in err or "413" in err:
+                        print("[DEBUG] Payload muy grande, reduciendo...")
+                        payload = format_tasks(result, max_items=10, max_chars=3000)
+                        try:
+                            followup = ai.chat.completions.create(
+                                model="openai/gpt-4.1-mini",
+                                messages=[
+                                    {"role": "system", "content": system_msg},
+                                    {"role": "user", "content": payload},
+                                ],
+                            )
+                        except Exception as e2:
+                            print("Error llamando a la IA tras recorte:", e2)
+                            continue
+                    else:
+                        print("Error llamando a la IA:", e)
+                        continue
+
+                print(followup.choices[0].message.content)
+
+            else:
+                print(answer)
+
+
 if __name__ == "__main__":
     asyncio.run(main())

@@ -1,7 +1,32 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
 [project]
-name = "mcp"
-version = "0.1.0"
-description = "Add your description here"
+name = "classroom-mcp-server"
+version = "1.0.0"
+description = "MCP server for connecting to classroom and asking about courseWork's."
 readme = "README.md"
-requires-python = ">=3.14"
-dependencies = []
+requires-python = ">=3.12"
+dependencies = [
+    "fastmcp>=0.1.0",
+    "python-dotenv>=1.0.0",
+    "openai>=1.0.0",
+    "google-auth>=2.0.0",
+    "google-auth-oauthlib>=1.0.0",
+    "google-auth-httplib2>=0.2.0",
+    "google-api-python-client>=2.0.0",
+    "toon-python>=0.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "python-dotenv",
+    "google-auth-oauthlib",
+    "google-api-python-client",
+    "openai", 
+    "fastmcp",
+]
+
+[tool.setuptools]
+py-modules = ["main", "client", "test_client"]

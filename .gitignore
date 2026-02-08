@@ -9,3 +9,6 @@ uv.lock
 
 #Test Stuff
 test*
+
+#Exposition stuff
+./*expo*
